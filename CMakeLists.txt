@@ -5,6 +5,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(ENABLE_SANITIZERS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address,undefined)
+        message(STATUS "Sanitizers enabled: AddressSanitizer, UndefinedBehaviorSanitizer")
+    elseif(MSVC)
+        add_compile_options(/fsanitize=address)
+        message(STATUS "AddressSanitizer enabled for MSVC")
+    else()
+        message(WARNING "Sanitizers not supported on this compiler")
+    endif()
+endif()
+
 # Header files location
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
