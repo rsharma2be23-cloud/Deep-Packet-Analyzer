@@ -5,20 +5,52 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Source files
-set(SOURCES
+# Header files location
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# Original target
+add_executable(packet_analyzer
     src/main.cpp
     src/pcap_reader.cpp
     src/packet_parser.cpp
 )
 
-# Header files location
-include_directories(${CMAKE_SOURCE_DIR}/include)
+# Single-threaded DPI engine target
+add_executable(dpi_simple
+    src/main_working.cpp
+    src/pcap_reader.cpp
+    src/packet_parser.cpp
+    src/sni_extractor.cpp
+    src/types.cpp
+)
 
-# Create the executable
-add_executable(packet_analyzer ${SOURCES})
+# Self-contained multi-threaded DPI engine target
+add_executable(dpi_engine
+    src/dpi_mt.cpp
+    src/pcap_reader.cpp
+    src/packet_parser.cpp
+    src/sni_extractor.cpp
+    src/types.cpp
+)
+# Enable threading for multi-threaded targets
+find_package(Threads REQUIRED)
+target_link_libraries(dpi_engine PRIVATE Threads::Threads)
 
-# For macOS, we might need to link against system libraries later
-if(APPLE)
-    # Add any macOS-specific settings here
-endif()
+# Modular multi-threaded DPI engine target
+add_executable(dpi_modular
+    src/main_dpi.cpp
+    src/dpi_engine.cpp
+    src/fast_path.cpp
+    src/load_balancer.cpp
+    src/connection_tracker.cpp
+    src/rule_manager.cpp
+    src/pcap_reader.cpp
+    src/packet_parser.cpp
+    src/sni_extractor.cpp
+    src/types.cpp
+)
+target_link_libraries(dpi_modular PRIVATE Threads::Threads)
+
+# Enable CTest testing
+enable_testing()
+add_subdirectory(tests)

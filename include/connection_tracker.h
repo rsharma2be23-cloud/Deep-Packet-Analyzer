@@ -107,6 +107,13 @@ public:
         size_t total_connections_seen;
         std::unordered_map<AppType, size_t> app_distribution;
         std::vector<std::pair<std::string, size_t>> top_domains;
+        
+        struct AppFlowStats {
+            uint64_t flows = 0;
+            uint64_t packets = 0;
+            uint64_t bytes = 0;
+        };
+        std::unordered_map<AppType, AppFlowStats> app_stats;
     };
     
     GlobalStats getGlobalStats() const;

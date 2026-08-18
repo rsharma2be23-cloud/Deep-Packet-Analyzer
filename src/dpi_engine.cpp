@@ -296,10 +296,12 @@ void DPIEngine::outputThreadFunc() {
 void DPIEngine::handleOutput(const PacketJob& job, PacketAction action) {
     if (action == PacketAction::DROP) {
         stats_.dropped_packets++;
+        stats_.dropped_bytes += job.data.size();
         return;
     }
     
     stats_.forwarded_packets++;
+    stats_.forwarded_bytes += job.data.size();
     output_queue_.push(job);
 }
 
@@ -420,12 +422,14 @@ std::string DPIEngine::generateReport() const {
     
     ss << "╠══════════════════════════════════════════════════════════════╣\n";
     ss << "║ FILTERING STATISTICS                                          ║\n";
-    ss << "║   Forwarded:          " << std::setw(12) << stats_.forwarded_packets.load() << "                        ║\n";
-    ss << "║   Dropped/Blocked:    " << std::setw(12) << stats_.dropped_packets.load() << "                        ║\n";
+    ss << "║   Forwarded Packets:  " << std::setw(12) << stats_.forwarded_packets.load() << "                        ║\n";
+    ss << "║   Forwarded Bytes:    " << std::setw(12) << stats_.forwarded_bytes.load() << "                        ║\n";
+    ss << "║   Dropped Packets:    " << std::setw(12) << stats_.dropped_packets.load() << "                        ║\n";
+    ss << "║   Dropped Bytes:      " << std::setw(12) << stats_.dropped_bytes.load() << "                        ║\n";
     
     if (stats_.total_packets > 0) {
         double drop_rate = 100.0 * stats_.dropped_packets.load() / stats_.total_packets.load();
-        ss << "║   Drop Rate:          " << std::setw(11) << std::fixed << std::setprecision(2) << drop_rate << "%                        ║\n";
+        ss << "║   Drop Rate (Pkts):   " << std::setw(11) << std::fixed << std::setprecision(2) << drop_rate << "%                        ║\n";
     }
     
     if (lb_manager_) {
@@ -462,8 +466,8 @@ std::string DPIEngine::generateReport() const {
 }
 
 std::string DPIEngine::generateClassificationReport() const {
-    if (fp_manager_) {
-        return fp_manager_->generateClassificationReport();
+    if (global_conn_table_) {
+        return global_conn_table_->generateReport();
     }
     return "";
 }

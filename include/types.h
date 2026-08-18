@@ -172,7 +172,9 @@ struct DPIStats {
     std::atomic<uint64_t> total_packets{0};
     std::atomic<uint64_t> total_bytes{0};
     std::atomic<uint64_t> forwarded_packets{0};
+    std::atomic<uint64_t> forwarded_bytes{0};
     std::atomic<uint64_t> dropped_packets{0};
+    std::atomic<uint64_t> dropped_bytes{0};
     std::atomic<uint64_t> tcp_packets{0};
     std::atomic<uint64_t> udp_packets{0};
     std::atomic<uint64_t> other_packets{0};

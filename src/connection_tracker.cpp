@@ -192,11 +192,17 @@ GlobalConnectionTable::GlobalStats GlobalConnectionTable::getGlobalStats() const
         stats.total_active_connections += tracker_stats.active_connections;
         stats.total_connections_seen += tracker_stats.total_connections_seen;
         
-        // Collect app distribution
+        // Collect app distribution and flow/packet/byte counts
         tracker->forEach([&](const Connection& conn) {
             stats.app_distribution[conn.app_type]++;
+            
+            auto& app_f = stats.app_stats[conn.app_type];
+            app_f.flows++;
+            app_f.packets += conn.packets_in + conn.packets_out;
+            app_f.bytes += conn.bytes_in + conn.bytes_out;
+            
             if (!conn.sni.empty()) {
-                domain_counts[conn.sni]++;
+                domain_counts[conn.sni] += conn.packets_in + conn.packets_out;
             }
         });
     }
@@ -227,40 +233,39 @@ std::string GlobalConnectionTable::generateReport() const {
     ss << "║ Total Connections Seen: " << std::setw(10) << stats.total_connections_seen << "                          ║\n";
     
     ss << "╠══════════════════════════════════════════════════════════════╣\n";
-    ss << "║                    APPLICATION BREAKDOWN                      ║\n";
+    ss << "║ APPLICATION BREAKDOWN                                         ║\n";
+    ss << "╠══════════════════════════════════════════════════════════════╣\n";
+    ss << "║ Application        Flows        Packets                Bytes ║\n";
     ss << "╠══════════════════════════════════════════════════════════════╣\n";
     
-    // Calculate total for percentages
-    size_t total = 0;
-    for (const auto& pair : stats.app_distribution) {
-        total += pair.second;
-    }
-    
-    // Sort by count
-    std::vector<std::pair<AppType, size_t>> sorted_apps(
-        stats.app_distribution.begin(), stats.app_distribution.end());
+    // Sort apps by packet count
+    std::vector<std::pair<AppType, GlobalStats::AppFlowStats>> sorted_apps(
+        stats.app_stats.begin(), stats.app_stats.end());
     std::sort(sorted_apps.begin(), sorted_apps.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
+              [](const auto& a, const auto& b) { return a.second.packets > b.second.packets; });
     
     for (const auto& pair : sorted_apps) {
-        double pct = total > 0 ? (100.0 * pair.second / total) : 0;
-        ss << "║ " << std::setw(20) << std::left << appTypeToString(pair.first)
-           << std::setw(10) << std::right << pair.second
-           << " (" << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%)           ║\n";
+        const auto& app_f = pair.second;
+        ss << "║ " << std::setw(15) << std::left << appTypeToString(pair.first)
+           << std::setw(10) << std::right << app_f.flows
+           << std::setw(15) << std::right << app_f.packets
+           << std::setw(20) << std::right << app_f.bytes << " ║\n";
     }
     
     if (!stats.top_domains.empty()) {
         ss << "╠══════════════════════════════════════════════════════════════╣\n";
-        ss << "║                      TOP DOMAINS                             ║\n";
+        ss << "║ TOP DOMAINS (BY PACKETS)                                     ║\n";
+        ss << "╠══════════════════════════════════════════════════════════════╣\n";
+        ss << "║ Domain                                               Packets ║\n";
         ss << "╠══════════════════════════════════════════════════════════════╣\n";
         
         for (const auto& pair : stats.top_domains) {
             std::string domain = pair.first;
-            if (domain.length() > 35) {
-                domain = domain.substr(0, 32) + "...";
+            if (domain.length() > 42) {
+                domain = domain.substr(0, 39) + "...";
             }
-            ss << "║ " << std::setw(40) << std::left << domain
-               << std::setw(10) << std::right << pair.second << "           ║\n";
+            ss << "║ " << std::setw(45) << std::left << domain
+               << std::setw(15) << std::right << pair.second << " ║\n";
         }
     }
     

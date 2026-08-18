@@ -138,7 +138,18 @@ def create_dns_query(domain):
 
 
 def main():
-    writer = PCAPWriter('test_dpi.pcap')
+    import sys
+    multiplier = 1
+    filename = 'test_dpi.pcap'
+    if len(sys.argv) > 1:
+        try:
+            multiplier = int(sys.argv[1])
+        except ValueError:
+            filename = sys.argv[1]
+            if len(sys.argv) > 2:
+                multiplier = int(sys.argv[2])
+                
+    writer = PCAPWriter(filename)
     
     # Source: User's machine
     user_mac = '00:11:22:33:44:55'
@@ -181,86 +192,88 @@ def main():
         'api.twitter.com',
     ]
     
+    random.seed(42)
     seq_base = 1000
     
-    # Generate TLS packets
-    for dst_ip, sni, dst_port in tls_connections:
-        src_port = random.randint(49152, 65535)
+    for run in range(multiplier):
+        # Generate TLS packets
+        for dst_ip, sni, dst_port in tls_connections:
+            src_port = random.randint(49152, 65535)
+            
+            # TCP SYN
+            eth = create_ethernet_header(user_mac, gateway_mac)
+            tcp = create_tcp_header(src_port, dst_port, seq_base, 0, 0x02)  # SYN
+            ip = create_ip_header(user_ip, dst_ip, 6, len(tcp))
+            writer.write_packet(eth + ip + tcp)
+            
+            # TCP SYN-ACK (from server)
+            tcp = create_tcp_header(dst_port, src_port, seq_base + 1000, seq_base + 1, 0x12)  # SYN-ACK
+            ip = create_ip_header(dst_ip, user_ip, 6, len(tcp))
+            eth = create_ethernet_header(gateway_mac, user_mac)
+            writer.write_packet(eth + ip + tcp)
+            
+            # TCP ACK
+            eth = create_ethernet_header(user_mac, gateway_mac)
+            tcp = create_tcp_header(src_port, dst_port, seq_base + 1, seq_base + 1001, 0x10)  # ACK
+            ip = create_ip_header(user_ip, dst_ip, 6, len(tcp))
+            writer.write_packet(eth + ip + tcp)
+            
+            # TLS Client Hello with SNI
+            tls_data = create_tls_client_hello(sni)
+            tcp = create_tcp_header(src_port, dst_port, seq_base + 1, seq_base + 1001, 0x18)  # PSH-ACK
+            ip = create_ip_header(user_ip, dst_ip, 6, len(tcp) + len(tls_data))
+            writer.write_packet(eth + ip + tcp + tls_data)
+            
+            seq_base += 10000
         
-        # TCP SYN
-        eth = create_ethernet_header(user_mac, gateway_mac)
-        tcp = create_tcp_header(src_port, dst_port, seq_base, 0, 0x02)  # SYN
-        ip = create_ip_header(user_ip, dst_ip, 6, len(tcp))
-        writer.write_packet(eth + ip + tcp)
+        # Generate HTTP packets
+        for dst_ip, host, dst_port in http_connections:
+            src_port = random.randint(49152, 65535)
+            
+            # TCP handshake (simplified - just SYN)
+            eth = create_ethernet_header(user_mac, gateway_mac)
+            tcp = create_tcp_header(src_port, dst_port, seq_base, 0, 0x02)
+            ip = create_ip_header(user_ip, dst_ip, 6, len(tcp))
+            writer.write_packet(eth + ip + tcp)
+            
+            # HTTP request
+            http_data = create_http_request(host)
+            tcp = create_tcp_header(src_port, dst_port, seq_base + 1, 1, 0x18)
+            ip = create_ip_header(user_ip, dst_ip, 6, len(tcp) + len(http_data))
+            writer.write_packet(eth + ip + tcp + http_data)
+            
+            seq_base += 10000
         
-        # TCP SYN-ACK (from server)
-        tcp = create_tcp_header(dst_port, src_port, seq_base + 1000, seq_base + 1, 0x12)  # SYN-ACK
-        ip = create_ip_header(dst_ip, user_ip, 6, len(tcp))
-        eth = create_ethernet_header(gateway_mac, user_mac)
-        writer.write_packet(eth + ip + tcp)
+        # Generate DNS queries
+        dns_server = '8.8.8.8'
+        for domain in dns_queries:
+            src_port = random.randint(49152, 65535)
+            
+            dns_data = create_dns_query(domain)
+            eth = create_ethernet_header(user_mac, gateway_mac)
+            udp = create_udp_header(src_port, 53, len(dns_data))
+            ip = create_ip_header(user_ip, dns_server, 17, len(udp) + len(dns_data))
+            writer.write_packet(eth + ip + udp + dns_data)
         
-        # TCP ACK
-        eth = create_ethernet_header(user_mac, gateway_mac)
-        tcp = create_tcp_header(src_port, dst_port, seq_base + 1, seq_base + 1001, 0x10)  # ACK
-        ip = create_ip_header(user_ip, dst_ip, 6, len(tcp))
-        writer.write_packet(eth + ip + tcp)
-        
-        # TLS Client Hello with SNI
-        tls_data = create_tls_client_hello(sni)
-        tcp = create_tcp_header(src_port, dst_port, seq_base + 1, seq_base + 1001, 0x18)  # PSH-ACK
-        ip = create_ip_header(user_ip, dst_ip, 6, len(tcp) + len(tls_data))
-        writer.write_packet(eth + ip + tcp + tls_data)
-        
-        seq_base += 10000
-    
-    # Generate HTTP packets
-    for dst_ip, host, dst_port in http_connections:
-        src_port = random.randint(49152, 65535)
-        
-        # TCP handshake (simplified - just SYN)
-        eth = create_ethernet_header(user_mac, gateway_mac)
-        tcp = create_tcp_header(src_port, dst_port, seq_base, 0, 0x02)
-        ip = create_ip_header(user_ip, dst_ip, 6, len(tcp))
-        writer.write_packet(eth + ip + tcp)
-        
-        # HTTP request
-        http_data = create_http_request(host)
-        tcp = create_tcp_header(src_port, dst_port, seq_base + 1, 1, 0x18)
-        ip = create_ip_header(user_ip, dst_ip, 6, len(tcp) + len(http_data))
-        writer.write_packet(eth + ip + tcp + http_data)
-        
-        seq_base += 10000
-    
-    # Generate DNS queries
-    dns_server = '8.8.8.8'
-    for domain in dns_queries:
-        src_port = random.randint(49152, 65535)
-        
-        dns_data = create_dns_query(domain)
-        eth = create_ethernet_header(user_mac, gateway_mac)
-        udp = create_udp_header(src_port, 53, len(dns_data))
-        ip = create_ip_header(user_ip, dns_server, 17, len(udp) + len(dns_data))
-        writer.write_packet(eth + ip + udp + dns_data)
-    
-    # Add some blocked IP traffic (from a specific source)
-    blocked_source_ip = '192.168.1.50'
-    for i in range(5):
-        src_port = random.randint(49152, 65535)
-        dst_ip = '172.217.0.100'
-        
-        eth = create_ethernet_header('00:11:22:33:44:56', gateway_mac)
-        tcp = create_tcp_header(src_port, 443, seq_base, 0, 0x02)
-        ip = create_ip_header(blocked_source_ip, dst_ip, 6, len(tcp))
-        writer.write_packet(eth + ip + tcp)
-        
-        seq_base += 1000
+        # Add some blocked IP traffic (from a specific source)
+        blocked_source_ip = '192.168.1.50'
+        for i in range(5):
+            src_port = random.randint(49152, 65535)
+            dst_ip = '172.217.0.100'
+            
+            eth = create_ethernet_header('00:11:22:33:44:56', gateway_mac)
+            tcp = create_tcp_header(src_port, 443, seq_base, 0, 0x02)
+            ip = create_ip_header(blocked_source_ip, dst_ip, 6, len(tcp))
+            writer.write_packet(eth + ip + tcp)
+            
+            seq_base += 1000
     
     writer.close()
-    print(f"Created test_dpi.pcap with test traffic")
-    print(f"  - {len(tls_connections)} TLS connections with SNI")
-    print(f"  - {len(http_connections)} HTTP connections")
-    print(f"  - {len(dns_queries)} DNS queries")
-    print(f"  - 5 packets from blocked IP {blocked_source_ip}")
+    print(f"Created {filename} with test traffic")
+    print(f"  - {len(tls_connections) * multiplier} TLS connections with SNI")
+    print(f"  - {len(http_connections) * multiplier} HTTP connections")
+    print(f"  - {len(dns_queries) * multiplier} DNS queries")
+    print(f"  - {5 * multiplier} packets from blocked IP {blocked_source_ip}")
 
 
 if __name__ == '__main__':
