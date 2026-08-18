@@ -200,8 +200,16 @@ std::string PacketParser::macToString(const uint8_t* mac) {
 }
 
 std::string PacketParser::ipToString(uint32_t ip) {
-    // IP is stored in network byte order (big-endian)
-    // We need to extract each byte
+    // If the system is big-endian, we must swap the bytes of the memcpy'd IP
+    // to match the host-shift order representation (bits 0-7 = first octet).
+    uint32_t check = 1;
+    if (*reinterpret_cast<const uint8_t*>(&check) == 0) {
+        ip = ((ip & 0x000000FF) << 24) |
+             ((ip & 0x0000FF00) << 8)  |
+             ((ip & 0x00FF0000) >> 8)  |
+             ((ip & 0xFF000000) >> 24);
+    }
+    
     std::ostringstream ss;
     ss << ((ip >> 0) & 0xFF) << "."
        << ((ip >> 8) & 0xFF) << "."

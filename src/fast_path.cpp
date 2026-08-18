@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 
 namespace DPI {
 
@@ -85,7 +86,11 @@ PacketAction FastPathProcessor::processPacket(PacketJob& job) {
     }
     
     // Update connection stats
-    bool is_outbound = true;  // In this model, all packets from user are outbound
+    // Determine packet direction by checking if incoming matches the flow's original direction
+    bool is_outbound = (job.tuple.src_ip == conn->tuple.src_ip &&
+                        job.tuple.dst_ip == conn->tuple.dst_ip &&
+                        job.tuple.src_port == conn->tuple.src_port &&
+                        job.tuple.dst_port == conn->tuple.dst_port);
     conn_tracker_.updateConnection(conn, job.data.size(), is_outbound);
     
     // Update TCP state if applicable

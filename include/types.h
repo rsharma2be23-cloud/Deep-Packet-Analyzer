@@ -40,12 +40,25 @@ struct FiveTuple {
 // Hash function for FiveTuple (used for load balancing)
 struct FiveTupleHash {
     size_t operator()(const FiveTuple& tuple) const {
-        // Simple but effective hash combining all fields
+        uint32_t ip1 = tuple.src_ip;
+        uint32_t ip2 = tuple.dst_ip;
+        uint16_t port1 = tuple.src_port;
+        uint16_t port2 = tuple.dst_port;
+
+        // Complete endpoints (IP, Port) must be canonicalized before hashing
+        // to ensure direction-independence. Hashing individual IPs/ports 
+        // independently would break endpoint pairing, but canonicalizing
+        // the pair (IP, Port) guarantees A->B and B->A map to the same hash.
+        if (ip1 > ip2 || (ip1 == ip2 && port1 > port2)) {
+            std::swap(ip1, ip2);
+            std::swap(port1, port2);
+        }
+
         size_t h = 0;
-        h ^= std::hash<uint32_t>{}(tuple.src_ip) + 0x9e3779b9 + (h << 6) + (h >> 2);
-        h ^= std::hash<uint32_t>{}(tuple.dst_ip) + 0x9e3779b9 + (h << 6) + (h >> 2);
-        h ^= std::hash<uint16_t>{}(tuple.src_port) + 0x9e3779b9 + (h << 6) + (h >> 2);
-        h ^= std::hash<uint16_t>{}(tuple.dst_port) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint32_t>{}(ip1) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint32_t>{}(ip2) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint16_t>{}(port1) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint16_t>{}(port2) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<uint8_t>{}(tuple.protocol) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
