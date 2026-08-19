@@ -1,452 +1,132 @@
-# DPI Engine — Deep Packet Inspection System
+# Deep Packet Inspection (DPI) Engine
 
-A C++17-based Deep Packet Inspection (DPI) engine for analyzing network traffic stored in PCAP files. The system parses Ethernet, IPv4, TCP, and UDP packets, tracks network flows using five-tuples, identifies applications through TLS SNI and HTTP Host information, and applies configurable traffic-blocking rules.
+A high-performance C++17-based Deep Packet Inspection (DPI) engine for stateful network traffic analysis, flow tracking, protocol extraction, and rule-based filtering. The engine parses raw Ethernet, IPv4, TCP, and UDP packets, tracks connection states, extracts application-layer identifiers (TLS SNI, HTTP Host, DNS queries), and applies configurable blocking rules at line rate.
 
-The project includes both a **single-threaded implementation** for straightforward packet processing and a **multi-threaded processing pipeline** designed to distribute packet analysis across multiple worker threads.
-
----
-
-## Overview
-
-Deep Packet Inspection goes beyond inspecting basic packet headers by analyzing packet payloads to identify higher-level protocols, domains, and applications.
-
-This project processes captured network traffic through the following pipeline:
-
-```text
-                 PCAP Input
-                     │
-                     ▼
-              ┌─────────────┐
-              │ PCAP Reader │
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │Packet Parser│
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │Flow Tracking│
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │ DPI / SNI   │
-              │ Classification│
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │Rule Manager │
-              └──────┬──────┘
-                     │
-              ┌──────┴──────┐
-              ▼             ▼
-           Forward         Drop
-              │
-              ▼
-         Output PCAP
-```
-
-The engine can identify traffic such as **HTTP, HTTPS, DNS, Google, YouTube, Facebook**, and other applications represented by the configured application signatures.
+The project features a modular architecture supporting both a simple single-threaded processing loop and a multi-threaded, pipelined design utilizing consistent hashing for lock-free worker thread execution.
 
 ---
 
-## Key Features
-
-* **PCAP file parsing**
-* Ethernet, IPv4, TCP, and UDP packet parsing
-* Five-tuple based flow tracking
-* TLS Client Hello inspection
-* TLS **Server Name Indication (SNI)** extraction
-* HTTP `Host` header extraction
-* Application/domain classification
-* Source-IP based blocking
-* Application based blocking
-* Domain based blocking
-* Flow-level traffic blocking
-* Single-threaded processing mode
-* Multi-threaded processing pipeline
-* Load Balancer and Fast Path architecture
-* Thread-safe producer-consumer queues
-* Traffic statistics and processing reports
-* Application-level traffic breakdown
-* Configurable number of Load Balancer and Fast Path threads
-* Test PCAP generation
+## Technical Highlights
+* **Zero-Copy Parser:** Direct, boundary-validated parsing of Ethernet frames, IPv4 packets, TCP segments (including flags/sequence matching), and UDP datagrams.
+* **Stateful Flow Tracking:** Lightweight flow identification via five-tuples, tracking connection states (`NEW`, `ESTABLISHED`, `CLASSIFIED`, `BLOCKED`, `CLOSED`) and inbound/outbound stats.
+* **Deep Packet Inspection:** Fully compliant parsers for TLS Client Hello (Server Name Indication - SNI), HTTP requests (`Host` header), and DNS queries (QNAME label decoding).
+* **Multi-Threaded Pipeline:** Reader/Writer thread decoupling, symmetric hash-based load balancing, and lock-free Fast Path workers.
+* **CTest Regression Suite:** Fully automated unit tests covering packet parsing, rule matching, connection trackers, and extractors.
+* **Profiling & Sanitizers:** Standard configuration hooks for GCC compiler sanitizers (ASan/UBSan) and `gprof` performance profiling.
 
 ---
 
-## Architecture
+## System Architecture
 
-### Single-Threaded Pipeline
-
-The simple implementation processes packets sequentially:
-
-```text
-PCAP
- │
- ▼
-PCAP Reader
- │
- ▼
-Packet Parser
- │
- ▼
-Five-Tuple / Flow Tracking
- │
- ▼
-SNI / HTTP Inspection
- │
- ▼
-Application Classification
- │
- ▼
-Blocking Rules
- │
- ├── Block ──► Drop
- │
- └── Allow ──► Output PCAP
+```mermaid
+graph TD
+    Input[PCAP Input File] --> Reader[PcapReader Thread]
+    Reader --> LB[Load Balancers]
+    LB -->|hash(5-tuple) % Workers| FP[Fast Path Workers]
+    FP --> Tracker[ConnectionTracker]
+    FP --> Rules[RuleManager]
+    Rules -->|Allow| OutQueue[Output Queue]
+    Rules -->|Block| Drop[Drop Packet]
+    OutQueue --> Writer[PcapWriter Thread]
+    Writer --> Output[Output PCAP File]
 ```
 
-This implementation is useful for understanding the complete packet-processing flow and for analyzing smaller captures.
-
-### Multi-Threaded Pipeline
-
-The multi-threaded implementation distributes packet processing across multiple workers:
-
-```text
-                    ┌───────────────┐
-                    │ Reader Thread │
-                    └───────┬───────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │ Load Balancers│
-                    └───────┬───────┘
-                            │
-              ┌─────────────┼─────────────┐
-              ▼             ▼             ▼
-          ┌────────┐    ┌────────┐    ┌────────┐
-          │FastPath│    │FastPath│    │FastPath│
-          │   FP   │    │   FP   │    │   FP   │
-          └────┬───┘    └────┬───┘    └────┬───┘
-               │             │             │
-               └─────────────┼─────────────┘
-                             ▼
-                    ┌────────────────┐
-                    │ Output Queue   │
-                    └───────┬────────┘
-                            ▼
-                    ┌────────────────┐
-                    │ Output Writer  │
-                    └────────────────┘
-```
-
-Packets are distributed using a hash of their five-tuple:
-
-```text
-hash(5-tuple) % number_of_workers
-```
-
-This keeps packets belonging to the same flow associated with the same Fast Path worker, allowing flow state to be maintained locally.
+### Ingestion & Work Distribution (Multi-Threaded Mode)
+1. **Reader:** Ingests packets from PCAP and queues them to the Load Balancers.
+2. **Load Balancer:** Uses a symmetric 5-tuple hash to route both directions of a flow to the same Fast Path worker thread.
+3. **Fast Path Worker:** Performs connection tracking, payload parsing, application classification, and rule application within its thread-local space.
+4. **Writer:** Consumes allowed packets from the output queue and writes them to the output PCAP.
 
 ---
 
-## Packet Processing Flow
+## Core Design Decisions
 
-### 1. Read the PCAP
+### Directional Five-Tuple Equality vs. Symmetric Hashing
+* **Directional Equality:** [`FiveTuple::operator==`](file:///d:/Desktop/DPI%20engine/Packet_analyzer/include/types.h#L24) remains strictly directional (`A->B != B->A`). This is required to determine the packet flow direction (identifying which side initiated the flow and tracking separate inbound/outbound byte and packet counts).
+* **Symmetric Hashing:** The [`FiveTupleHash`](file:///d:/Desktop/DPI%20engine/Packet_analyzer/include/types.h#L41) canonicalizes endpoints by sorting the source/destination IP and port pairs before hashing. This guarantees that `A->B` and `B->A` generate the identical hash value, routing both directions to the same Fast Path worker thread.
 
-The `PcapReader` opens the input capture and reads the PCAP global header followed by individual packet records.
+### Bidirectional Flow Tracking
+* In [`ConnectionTracker`](file:///d:/Desktop/DPI%20engine/Packet_analyzer/include/connection_tracker.h#L27), connection records are stored using a canonicalized `FiveTuple` key.
+* When a packet arrives, its key is canonicalized. This maps both directions of the flow to a single `Connection` record in exactly **one map lookup**.
+* Directionality is preserved by storing the initial initiating tuple inside the `Connection` record. If the packet's tuple matches the initiating tuple, it is classified as `outbound` (out); otherwise, it is `inbound` (in).
 
-```cpp
-PcapReader reader;
-
-reader.open("capture.pcap");
-
-while (reader.readNextPacket(raw)) {
-    // Process packet
-}
-```
-
-Each packet contains:
-
-* Timestamp
-* Captured length
-* Original packet length
-* Raw packet bytes
+### Thread-Local & Lock-Free State
+Because the Load Balancer pins flows to specific Fast Path threads using the symmetric hash, each thread manages its own [`ConnectionTracker`](file:///d:/Desktop/DPI%20engine/Packet_analyzer/include/connection_tracker.h#L27). This eliminates the need for thread synchronization or mutex locks during packet lookup and classification, keeping the Fast Path lock-free.
 
 ---
 
-### 2. Parse Network Protocols
+## Performance Benchmark
 
-The packet parser extracts information from the protocol headers.
+We evaluated the performance of the modular DPI engine on a deterministic 38,500-packet PCAP dataset (generated with scale `500`). Throughput is reported as the median of 3 consecutive runs.
 
-```text
-Ethernet
-   │
-   ▼
-IPv4
-   │
-   ├── TCP
-   │
-   └── UDP
-```
+| Fast Path Workers | Baseline Throughput (pkt/s) | Optimized Throughput (pkt/s) | Throughput Change |
+| :---: | ---: | ---: | :---: |
+| **1** | 14,212.0 | 41,472.9 | **+191.8%** |
+| **2** | *N/A* | 38,378.9 | *baseline unavailable* |
+| **4** | 38,021.0 | 48,295.0 | **+27.0%** |
+| **8** | 41,330.0 | 47,459.6 | **+14.8%** |
 
-The parser extracts fields such as:
-
-* Source/destination MAC addresses
-* Source/destination IP addresses
-* Source/destination ports
-* IP protocol
-* TCP flags
-* TCP sequence information
-* Payload location
-
-Network byte order is handled using functions such as `ntohs()` and `ntohl()`.
+*Note: The major performance gain was achieved by optimizing the redundant connection map lookup path and eliminating duplicate connection record creations for bidirectional flows.*
 
 ---
 
-### 3. Track Network Flows
+## Development & Build Environment
 
-Each flow is represented using a five-tuple:
+The project is configured for Windows builds using the MSYS2 UCRT64 toolchain.
 
-```text
-Source IP
-Destination IP
-Source Port
-Destination Port
-Protocol
-```
+### Prerequisites
+* **OS:** Windows 10/11
+* **Compiler:** GCC/G++ 16.2.0 (MSYS2 UCRT64)
+* **Build System:** CMake (>= 3.16) + Ninja
+* **Python:** Python 3.x (for generating test data)
 
-Example:
-
-```text
-192.168.1.100:54321
-        │
-        ▼
-172.217.14.206:443
-Protocol: TCP
-```
-
-The five-tuple is used as the key for the flow table.
-
-```cpp
-Flow& flow = flows[tuple];
-```
-
-This allows multiple packets belonging to the same connection to share state.
+### Building the Project
+1. Open PowerShell or Command Prompt.
+2. Add the UCRT64 bin directory to your path:
+   ```powershell
+   $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+   ```
+3. Generate the build files and compile:
+   ```powershell
+   cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -B build-ucrt64 -S .
+   cmake --build build-ucrt64
+   ```
 
 ---
 
-## Deep Packet Inspection
+## Running and Testing
 
-### TLS SNI Extraction
+### 1. Generate Test Traffic
+Generate a deterministic PCAP file containing TLS (SNI), HTTP (Host), DNS, and blocked IP traffic:
+```powershell
+python generate_test_pcap.py
+```
+This generates `test_dpi.pcap` in the root folder.
 
-For HTTPS traffic, the engine examines the TLS Client Hello and attempts to extract the Server Name Indication (SNI).
-
-For example:
-
-```text
-TLS Client Hello
-       │
-       ▼
-SNI Extension
-       │
-       ▼
-www.youtube.com
-       │
-       ▼
-Application Classification
-       │
-       ▼
-YouTube
+### 2. Run Automated Regression Tests (CTest)
+```powershell
+cd build-ucrt64
+ctest -C Release --output-on-failure
 ```
 
-The SNI extractor:
-
-1. Validates the TLS record.
-2. Checks for a Client Hello.
-3. Navigates through the Client Hello fields.
-4. Locates the SNI extension.
-5. Extracts the hostname.
-6. Maps the hostname to an application type.
-
-Example:
-
-```cpp
-if (sni.find("youtube") != std::string::npos) {
-    return AppType::YOUTUBE;
-}
+### 3. Run the DPI Engine (Application Blocking Example)
+Run the multi-threaded DPI engine blocking all traffic classified as `YouTube` and outputting the filtered stream:
+```powershell
+.\build-ucrt64\dpi_modular.exe test_dpi.pcap output.pcap --block-app YouTube
 ```
 
-### HTTP Host Extraction
-
-For HTTP traffic, the system can inspect the request payload and extract the `Host` header.
-
-This provides another mechanism for identifying the destination domain.
+### 4. Run Benchmarks
+Run the automated benchmark suite:
+```powershell
+python run_benchmarks.py
+```
 
 ---
 
-## Application Classification
+## Sanitizers & Profiling
 
-Applications are represented using the `AppType` enumeration.
-
-Examples include:
-
-```cpp
-enum class AppType {
-    UNKNOWN,
-    HTTP,
-    HTTPS,
-    DNS,
-    GOOGLE,
-    YOUTUBE,
-    FACEBOOK
-};
-```
-
-Domain/SNI patterns are mapped to application types.
-
-For example:
-
-```text
-www.youtube.com
-       │
-       ▼
-    YouTube
-
-www.facebook.com
-       │
-       ▼
-   Facebook
-```
-
-The application classification system can be extended by adding additional domain signatures.
-
----
-
-## Traffic Blocking
-
-The Rule Manager supports three main types of blocking rules.
-
-| Rule        | Example        | Effect                              |
-| ----------- | -------------- | ----------------------------------- |
-| Source IP   | `192.168.1.50` | Blocks traffic from the source      |
-| Application | `YouTube`      | Blocks matching application traffic |
-| Domain      | `facebook`     | Blocks matching SNI/domain traffic  |
-
-### Blocking Flow
-
-```text
-Packet
-  │
-  ▼
-Source IP blocked?
-  │
-  ├── Yes ──► DROP
-  │
-  ▼
-Application blocked?
-  │
-  ├── Yes ──► DROP
-  │
-  ▼
-Domain blocked?
-  │
-  ├── Yes ──► DROP
-  │
-  ▼
-FORWARD
-```
-
-### Flow-Level Blocking
-
-Blocking is maintained at the flow level.
-
-Once a flow is identified as blocked, subsequent packets belonging to that flow are also dropped.
-
-```text
-SYN
- │
- ▼
-SYN-ACK
- │
- ▼
-ACK
- │
- ▼
-TLS Client Hello
- │
- ▼
-SNI detected
- │
- ▼
-Application identified
- │
- ▼
-Flow marked BLOCKED
- │
- ├── Future packet ──► DROP
- ├── Future packet ──► DROP
- └── Future packet ──► DROP
-```
-
-This allows the system to make a classification decision once sufficient information becomes available and maintain that decision for the rest of the connection.
-
----
-
-## Multi-Threading
-
-The multi-threaded implementation uses a pipeline consisting of:
-
-* Reader thread
-* Load Balancer threads
-* Fast Path threads
-* Output Writer thread
-
-### Load Balancer
-
-Load Balancers distribute incoming packets to Fast Path workers.
-
-```cpp
-size_t fp_idx = hash(pkt.tuple) % num_fps_;
-fps_[fp_idx]->queue().push(pkt);
-```
-
-### Fast Path
-
-Fast Path workers perform the main DPI processing:
-
-```text
-Receive Packet
-     │
-     ▼
-Flow Lookup
-     │
-     ▼
-DPI Classification
-     │
-     ▼
-Apply Rules
-     │
- ┌───┴────┐
- ▼        ▼
-DROP    FORWARD
-           │
-           ▼
-      Output Queue
-```
-
-### Thread-Safe Queues
-
-Producer-consumer communication is implemented using thread-safe queues based on:
-
-* `std::mutex`
-* `std::condition_variable`
-* `std::queue`
-
-This allows worker threads to safely exchange packets without continuously polling for work.
+* **Sanitizers:** Although CMake supports enabling address and undefined behavior sanitizers via `-DENABLE_SANITIZERS=ON`, they are currently disabled due to environment toolchain limitations (missing `libasan` and `libubsan` runtime libraries in the local MSYS2 environment).
+* **Profiling:** You can generate profiling binaries using the GCC `-pg` flags in `build-profile` to analyze hotspots via `gprof`. *(Note: Due to lack of native POSIX interval timer support on Windows, gprof may report "no time accumulated" for fast execution runs).*
 
 ---
 
@@ -454,310 +134,56 @@ This allows worker threads to safely exchange packets without continuously polli
 
 ```text
 Packet_analyzer/
-│
 ├── include/
-│   ├── pcap_reader.h
-│   ├── packet_parser.h
-│   ├── sni_extractor.h
-│   ├── types.h
-│   ├── rule_manager.h
-│   ├── connection_tracker.h
-│   ├── load_balancer.h
-│   ├── fast_path.h
-│   ├── thread_safe_queue.h
-│   └── dpi_engine.h
-│
+│   ├── dpi_engine.h          # Orchestrates LB, FPs, and Reader/Writer pipelines
+│   ├── fast_path.h           # Fast Path processor thread class
+│   ├── load_balancer.h       # Flow-pinning load balancer thread
+│   ├── connection_tracker.h  # Stateful flow tracking map
+│   ├── rule_manager.h        # Blocking rule management
+│   ├── sni_extractor.h       # TLS SNI, HTTP Host, and DNS label extractors
+│   ├── thread_safe_queue.h   # Multi-producer multi-consumer queue
+│   ├── packet_parser.h       # Zero-copy header parsers
+│   ├── pcap_reader.h         # Read/write PCAP records
+│   └── types.h               # Core types (FiveTuple, AppType, Connection)
 ├── src/
-│   ├── pcap_reader.cpp
-│   ├── packet_parser.cpp
+│   ├── dpi_engine.cpp
+│   ├── fast_path.cpp
+│   ├── load_balancer.cpp
+│   ├── connection_tracker.cpp
+│   ├── rule_manager.cpp
 │   ├── sni_extractor.cpp
+│   ├── packet_parser.cpp
+│   ├── pcap_reader.cpp
 │   ├── types.cpp
-│   ├── main_working.cpp
-│   └── dpi_mt.cpp
-│
-├── generate_test_pcap.py
-├── test_dpi.pcap
-├── output.pcap
+│   └── main_dpi.cpp          # Entry point for the modular multi-threaded engine
+├── tests/
+│   ├── test_connection_tracker.cpp
+│   ├── test_extractors.cpp
+│   ├── test_rules.cpp
+│   └── test_types.cpp
 ├── CMakeLists.txt
-├── WINDOWS_SETUP.md
+├── generate_test_pcap.py
 └── README.md
 ```
 
-### Important Components
-
-| Component            | Responsibility                                 |
-| -------------------- | ---------------------------------------------- |
-| `pcap_reader`        | Reads PCAP files and packet records            |
-| `packet_parser`      | Parses Ethernet/IP/TCP/UDP headers             |
-| `sni_extractor`      | Extracts TLS SNI and HTTP Host information     |
-| `types`              | Core structures and application classification |
-| `rule_manager`       | Manages traffic-blocking rules                 |
-| `connection_tracker` | Maintains flow state                           |
-| `load_balancer`      | Distributes packets to processing workers      |
-| `fast_path`          | Performs DPI processing                        |
-| `thread_safe_queue`  | Synchronizes packet communication              |
-| `dpi_engine`         | Coordinates DPI components                     |
-
 ---
 
-## Requirements
+## Engineering Challenges & Lessons
 
-* C++17-compatible compiler
-* `g++` or `clang++`
-* Python 3 for generating test PCAP data
-
-The existing implementation uses standard C++ facilities for packet processing and does not require an external packet-processing library.
-
----
-
-## Build
-
-### Single-Threaded Version
-
-```bash
-g++ -std=c++17 -O2 -I include -o dpi_simple \
-    src/main_working.cpp \
-    src/pcap_reader.cpp \
-    src/packet_parser.cpp \
-    src/sni_extractor.cpp \
-    src/types.cpp
-```
-
-### Multi-Threaded Version
-
-```bash
-g++ -std=c++17 -pthread -O2 -I include -o dpi_engine \
-    src/dpi_mt.cpp \
-    src/pcap_reader.cpp \
-    src/packet_parser.cpp \
-    src/sni_extractor.cpp \
-    src/types.cpp
-```
-
----
-
-## Usage
-
-### Basic Analysis
-
-```bash
-./dpi_engine test_dpi.pcap output.pcap
-```
-
-### Enable Application Blocking
-
-```bash
-./dpi_engine test_dpi.pcap output.pcap \
-    --block-app YouTube \
-    --block-app TikTok
-```
-
-### Block a Source IP
-
-```bash
-./dpi_engine test_dpi.pcap output.pcap \
-    --block-ip 192.168.1.50
-```
-
-### Block a Domain
-
-```bash
-./dpi_engine test_dpi.pcap output.pcap \
-    --block-domain facebook
-```
-
-### Configure Processing Threads
-
-```bash
-./dpi_engine input.pcap output.pcap --lbs 4 --fps 4
-```
-
-This configures four Load Balancer threads and four Fast Path workers per the project's multi-threaded processing model.
-
----
-
-## Generate Test Traffic
-
-The repository includes a Python utility for generating test PCAP data.
-
-```bash
-python3 generate_test_pcap.py
-```
-
-This generates:
-
-```text
-test_dpi.pcap
-```
-
-which can then be processed by the DPI engine.
-
----
-
-## Output
-
-The engine produces processing statistics including:
-
-* Total packets
-* Total bytes
-* TCP packets
-* UDP packets
-* Forwarded packets
-* Dropped packets
-* Thread processing statistics
-* Application breakdown
-* Detected domains/SNIs
-
-Example:
-
-```text
-PROCESSING REPORT
-
-Total Packets: 77
-Total Bytes:   5738
-
-TCP Packets:   73
-UDP Packets:    4
-
-Forwarded:     69
-Dropped:        8
-
-APPLICATION BREAKDOWN
-
-HTTPS
-Unknown
-YouTube
-DNS
-Facebook
-
-Detected SNIs
-
-www.youtube.com
-www.facebook.com
-www.google.com
-github.com
-```
-
----
-
-## Technical Concepts Demonstrated
-
-This project combines several important systems and networking concepts:
-
-### Networking
-
-* Ethernet frames
-* IPv4 packet structure
-* TCP/UDP
-* TCP flags
-* Network byte order
-* PCAP format
-* TLS Client Hello
-* SNI
-
-### Systems Programming
-
-* C++17
-* Binary file processing
-* Raw byte parsing
-* Hash-based data structures
-* Memory and buffer handling
-
-### Concurrency
-
-* Multi-threaded processing
-* Producer-consumer architecture
-* Mutexes
-* Condition variables
-* Thread-safe queues
-* Work distribution
-* Flow-aware packet routing
-
-### Network Security
-
-* Deep Packet Inspection
-* Application classification
-* Domain identification
-* Rule-based traffic filtering
-* Flow-level blocking
-
----
-
-## Design Highlights
-
-### Five-Tuple Flow Tracking
-
-Using:
-
-```text
-Source IP
-Destination IP
-Source Port
-Destination Port
-Protocol
-```
-
-allows packets belonging to the same network conversation to be grouped into a single flow.
-
-### Flow-Aware Worker Assignment
-
-The multi-threaded architecture hashes the flow's five-tuple to consistently route packets belonging to the same connection to the same Fast Path worker.
-
-This simplifies state management because each worker can maintain its own flow state.
-
-### Producer-Consumer Processing
-
-The multi-threaded architecture separates packet ingestion, processing, and output through queues, allowing different stages of the pipeline to operate concurrently.
+1. **Bidirectional Pair Mapping:** Solved the directional boundary issue by canonicalizing connection keys while preserving the original flow initiator tuple to accurately measure inbound vs. outbound statistics.
+2. **C++ Member Initialization Order:** Fixed a critical multithreaded crash in [`LoadBalancer`](file:///d:/Desktop/DPI%20engine/Packet_analyzer/include/load_balancer.h#L36) by ensuring vector allocations refer to parameters initialized earlier in the constructor's declaration sequence.
+3. **Truncated/Malformed Input Resilience:** Enforced strict size verification at each layer of protocol parsing (Record, Handshake, Extension, and String parsing) to guarantee resilience against malformed packets and prevent buffer overflows.
 
 ---
 
 ## Future Improvements
-
-Potential extensions include:
-
-* Additional application signatures
-* More protocol support
-* QUIC / HTTP3 inspection
-* Persistent rule configuration
-* Bandwidth throttling
-* Live traffic statistics
-* Expanded test coverage
-* Performance benchmarking
-* Additional PCAP formats and capture sources
+* Support for IPv6 parsing and flow tracking.
+* QUIC / HTTP3 parsing for modern SNI extraction.
+* Porting to DPDK for kernel-bypass packet capture.
+* Persistent rule file configuration reloading.
 
 ---
 
-## Learning Outcomes
+## License & Disclaimer
+This software is intended for educational, research, and authorized network security analysis only. Ensure you have the appropriate permissions before capturing or analyzing network traffic.
 
-This project provides hands-on experience with:
-
-1. Network packet structure and protocol parsing
-2. PCAP file processing
-3. Stateful network flow tracking
-4. TLS SNI inspection
-5. Rule-based traffic filtering
-6. C++ systems programming
-7. Multi-threaded pipeline design
-8. Producer-consumer synchronization
-9. Hash-based work distribution
-10. Network security concepts
-
----
-
-## Disclaimer
-
-This project is intended for **educational, research, and controlled network-analysis purposes**. Only analyze network traffic that you are authorized to inspect.
-
----
-
-## License
-
-Add the appropriate license for this project here.
-
----
-
-## Contributors
-
-Developed collaboratively by the project contributors.
-
-If you are using this repository as part of your portfolio, see the project history and individual contributions for implementation details.
