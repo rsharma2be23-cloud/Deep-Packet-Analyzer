@@ -19,9 +19,9 @@ void testTLSSNIExtraction() {
     std::vector<uint8_t> payload = {
         0x16, // Content Type Handshake
         0x03, 0x03, // Version TLS 1.2
-        0x00, 0x50, // Record Length (80 bytes)
+        0x00, 0x47, // Record Length (71 bytes)
         0x01, // Handshake Type Client Hello
-        0x00, 0x00, 0x4C, // Handshake Length (76 bytes)
+        0x00, 0x00, 0x43, // Handshake Length (67 bytes)
         0x03, 0x03, // Version TLS 1.2
         // Random (32 bytes)
         0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,
@@ -30,13 +30,13 @@ void testTLSSNIExtraction() {
         0x00, 0x2f, // Cipher suite
         0x01, // Compression Methods Length (1)
         0x00, // Compression method (null)
-        0x00, 0x1B, // Extensions Length (27 bytes)
+        0x00, 0x18, // Extensions Length (24 bytes)
         // SNI Extension
         0x00, 0x00, // Extension Type (0x0000 = SNI)
-        0x00, 0x17, // Extension Length (23 bytes)
-        0x00, 0x15, // SNI List Length (21 bytes)
+        0x00, 0x14, // Extension Length (20 bytes)
+        0x00, 0x12, // SNI List Length (18 bytes)
         0x00, // SNI Type (0x00 = hostname)
-        0x00, 0x12, // SNI Length (18 bytes = "www.youtube.com")
+        0x00, 0x0F, // SNI Length (15 bytes = "www.youtube.com")
         'w','w','w','.','y','o','u','t','u','b','e','.','c','o','m'
     };
 

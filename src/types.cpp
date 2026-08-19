@@ -1,4 +1,6 @@
 #include "types.h"
+#include <cstring>
+#include <string>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>

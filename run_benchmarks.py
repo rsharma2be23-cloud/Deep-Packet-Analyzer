@@ -5,19 +5,24 @@ import time
 import subprocess
 
 def find_executable(name):
-    # Search common build paths for the executable
+    # Search common build paths for the executable, including the actual build directory used in this project
     paths = [
         os.path.join("build", name),
         os.path.join("build", "Release", name),
         os.path.join("build", "Debug", name),
         os.path.join("build", "tests", name),
+        os.path.join("build-ucrt64", name),
+        os.path.join("build-ucrt64", "Release", name),
+        os.path.join("build-ucrt64", "Debug", name),
+        os.path.join("build-ucrt64", "tests", name),
         name
     ]
     for p in paths:
-        if os.path.exists(p):
-            return p
+        # Prefer the .exe extension on Windows/MSYS2
         if os.path.exists(p + ".exe"):
             return p + ".exe"
+        if os.path.exists(p):
+            return p
     return None
 
 def main():
@@ -57,6 +62,9 @@ def main():
     pcap_size_mb = pcap_size_bytes / (1024 * 1024)
     print(f"Dataset generated successfully. Size: {pcap_size_mb:.2f} MB")
     
+    # Compute absolute path for robustness
+    pcap_abs_path = os.path.abspath(pcap_filename)
+    
     # 3. Benchmark runner
     results = []
     
@@ -74,7 +82,8 @@ def main():
         
     for name, bin_path, args in configs:
         out_pcap = f"out_{name.replace(' ', '_').lower()}.pcap"
-        cmd = [bin_path, pcap_filename, out_pcap] + args
+        # Use absolute path for input pcap to avoid CWD issues in modular binary
+        cmd = [bin_path, pcap_abs_path, out_pcap] + args
         
         print(f"Running benchmark: {name}...")
         start_time = time.perf_counter()
@@ -122,9 +131,9 @@ def main():
                 pass
                 
     # Cleanup benchmark pcap
-    if os.path.exists(pcap_filename):
+    if os.path.exists(pcap_abs_path):
         try:
-            os.remove(pcap_filename)
+            os.remove(pcap_abs_path)
         except:
             pass
             
